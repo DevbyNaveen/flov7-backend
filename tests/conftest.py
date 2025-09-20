@@ -28,6 +28,34 @@ def env_setup():
     os.environ["TESTING"] = "True"
     os.environ["DEBUG"] = "True"
 
+@pytest.fixture(autouse=True, scope="session")
+def configure_service_paths():
+    """Configure Python path to include all service directories for proper imports during testing."""
+    import sys
+    import os
+    # Get the root directory of the project (parent of tests directory)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    # Define service directories to add to the path
+    service_dirs = [
+        os.path.join(project_root, 'ai-service'),
+        os.path.join(project_root, 'api-gateway'),
+        os.path.join(project_root, 'workflow-service'),
+        os.path.join(project_root, 'shared')
+    ]
+    
+    # Add each service directory to the beginning of sys.path if not already there
+    for service_dir in service_dirs:
+        if service_dir not in sys.path:
+            sys.path.insert(0, service_dir)
+    
+    # Update PYTHONPATH environment variable
+    python_path = ':'.join(service_dirs) + ':' + os.environ.get('PYTHONPATH', '')
+    os.environ['PYTHONPATH'] = python_path
+    
+    print(f"Test environment configured. PYTHONPATH: {python_path}")
+    return
+
 @pytest.fixture(scope="session")
 def test_database_url():
     """Provide test database URL."""

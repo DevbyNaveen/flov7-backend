@@ -2,6 +2,10 @@
 
 AI-powered workflow automation platform built with FastAPI microservices.
 
+## 🎯 Overview
+
+Flov7 is an AI-powered workflow automation platform that allows users to create complex workflows using natural language prompts. The platform implements a 5-primitives system (Trigger, Action, Connection, Condition, Data) for building flexible and powerful workflows.
+
 ## 🏗️ Architecture
 
 This project consists of 3 main microservices:
@@ -10,26 +14,52 @@ This project consists of 3 main microservices:
 - **AI Service** (Port 8001): OpenAI GPT-4 integration and workflow generation
 - **Workflow Service** (Port 8002): Temporal orchestration and CrewAI execution
 
-## 🚀 Quick Start
+### 📡 Service Communication
+
+```bash
+API Gateway
+├── Forward AI requests → AI Service
+├── Forward workflow requests → Workflow Service
+└── Handle authentication & rate limiting
+
+AI Service
+├── Generate workflows from natural language
+├── Validate workflow structures
+└── Return AI metadata
+
+Workflow Service
+├── Execute workflows with Temporal
+├── Process with CrewAI agents
+└── Track execution status
+
+```
+
+## 🚀 Getting Started
 
 ### Prerequisites
+
 - Python 3.11+
 - Docker & Docker Compose
 - Git
 
 ### Setup
+
 1. Clone the repository
 2. Run the setup script:
    ```bash
    ./scripts/setup.sh
    ```
+
 3. Configure your environment variables in `.env`
+
 4. Start the services:
+
    ```bash
    docker-compose -f docker/docker-compose.dev.yml up
    ```
 
 ### Manual Setup
+
 1. Create virtual environment:
    ```bash
    python -m venv venv
@@ -44,7 +74,7 @@ This project consists of 3 main microservices:
 
 ## 📁 Project Structure
 
-```
+```bash
 flov7-backend/
 ├── api-gateway/          # FastAPI Gateway Service
 ├── ai-service/           # OpenAI + 5-primitives Service
