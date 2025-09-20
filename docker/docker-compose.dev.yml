@@ -1,0 +1,130 @@
+version: '3.8'
+
+services:
+  # API Gateway Service
+  api-gateway:
+    build:
+      context: ../api-gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - SERVICE_NAME=api-gateway
+      - DEBUG=True
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ../api-gateway:/app
+    networks:
+      - flov7-network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # AI Service
+  ai-service:
+    build:
+      context: ../ai-service
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - SERVICE_NAME=ai-service
+      - DEBUG=True
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ../ai-service:/app
+    networks:
+      - flov7-network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+
+  # Workflow Service
+  workflow-service:
+    build:
+      context: ../workflow-service
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      - SERVICE_NAME=workflow-service
+      - DEBUG=True
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - temporal
+      - postgres
+    volumes:
+      - ../workflow-service:/app
+    networks:
+      - flov7-network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
+
+  # PostgreSQL Database (for local development)
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=flov7_dev
+      - POSTGRES_USER=flov7
+      - POSTGRES_PASSWORD=flov7_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - flov7-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - flov7-network
+
+  # Temporal Server (for workflow orchestration)
+  temporal:
+    image: temporalio/auto-setup:latest
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+    environment:
+      - DB=postgresql
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEED_FILE=/etc/temporal/schema/postgres/v12/temporal.sql
+    volumes:
+      - temporal_data:/etc/temporal/data
+    networks:
+      - flov7-network
+    depends_on:
+      - postgres
+
+  # pgAdmin (Database GUI)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    ports:
+      - "8080:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@flov7.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    networks:
+      - flov7-network
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
+  redis_data:
+  temporal_data:
+
+networks:
+  flov7-network:
+    driver: bridge
