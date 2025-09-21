@@ -8,6 +8,10 @@ from typing import Dict, Any, List, Optional
 from uuid import UUID
 from datetime import datetime
 from pydantic import BaseModel
+import httpx
+import logging
+
+from app.config import config
 
 from app.auth.supabase_auth import supabase_auth
 from app.auth.api_key_auth import get_api_key_data, require_api_permissions
@@ -49,6 +53,21 @@ class WorkflowResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     version: int
+
+class WorkflowGenerationRequest(BaseModel):
+    """Request model for AI-powered workflow generation"""
+    prompt: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+class WorkflowGenerationResponse(BaseModel):
+    """Response model for AI-powered workflow generation"""
+    success: bool
+    workflow: Dict[str, Any]
+    workflow_id: str
+    ai_metadata: Optional[Dict[str, Any]] = None
+    message: str
 
 # Create router
 router = APIRouter(
@@ -285,18 +304,214 @@ async def execute_workflow(
         
         execution = execution_result["data"]
         
-        # TODO: Integrate with workflow service for actual execution
-        # For now, we'll return the execution ID and mark it as pending
+        # Call workflow service for actual execution
+        try:
+            from app.integration.workflow_service_client import workflow_service_client
+            
+            # Prepare workflow data for execution
+            workflow_execution_data = {
+                "id": str(workflow_id),
+                "workflow_json": workflow["workflow_json"],
+                "execution_id": execution["id"]
+            }
+            
+            # Execute workflow via workflow service
+            execution_response = await workflow_service_client.execute_workflow(
+                workflow_execution_data,
+                current_user["id"]
+            )
+            
+            # Update execution status with workflow service response
+            update_data = {
+                "status": execution_response["status"],
+                "workflow_service_execution_id": execution_response.get("execution_id")
+            }
+            
+            if execution_response.get("error_message"):
+                update_data["error_message"] = execution_response["error_message"]
+            if execution_response.get("execution_time_seconds"):
+                update_data["execution_time_seconds"] = execution_response["execution_time_seconds"]
+            if execution_response.get("output_data"):
+                update_data["output_data"] = execution_response["output_data"]
+            
+            await execution_crud.update_execution(execution["id"], current_user["id"], update_data)
+            
+            # Update workflow execution count
+            await workflow_crud.increment_execution_count(str(workflow_id))
+            
+            return {
+                "success": True,
+                "execution_id": execution["id"],
+                "status": execution_response["status"],
+                "workflow_service_execution_id": execution_response.get("execution_id"),
+                "message": "Workflow execution completed successfully" if execution_response["status"] == "completed" else "Workflow execution started"
+            }
+            
+        except Exception as ws_error:
+            # Update execution status with error
+            error_update_data = {
+                "status": "failed",
+                "error_message": str(ws_error)
+            }
+            await execution_crud.update_execution(execution["id"], current_user["id"], error_update_data)
+            
+            logger.error(f"Workflow service execution failed: {str(ws_error)}")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Workflow service error: {str(ws_error)}"
+            )
         
-        # Update workflow execution count
-        await workflow_crud.increment_execution_count(str(workflow_id))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error executing workflow: {str(e)}"
+        )
+
+@router.get("/{workflow_id}/executions", response_model=Dict[str, Any])
+async def get_workflow_executions(
+    workflow_id: UUID,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    current_user: Dict[str, Any] = Depends(supabase_auth.get_current_user)
+):
+    """Get execution history for a workflow"""
+    try:
+        # Check if workflow exists and belongs to user
+        workflow_result = await workflow_crud.get_workflow(str(workflow_id), current_user["id"])
         
-        return {
-            "success": True,
-            "execution_id": execution["id"],
+        if not workflow_result["success"]:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workflow not found"
+            )
+        
+        # Get executions using execution_crud
+        result = await execution_crud.list_executions(
+            user_id=current_user["id"],
+            workflow_id=str(workflow_id),
+            skip=skip,
+            limit=limit
+        )
+        
+        if result["success"]:
+            return {
+                "executions": result["data"],
+                "total": result["total"],
+                "skip": result["skip"],
+                "limit": result["limit"],
+                "has_more": result["has_more"]
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result["error"]
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching executions: {str(e)}"
+        )
+
+# Workflow Execution Operations
+@router.post("/{workflow_id}/execute", response_model=Dict[str, Any])
+async def execute_workflow(
+    workflow_id: UUID,
+    execution_data: WorkflowExecutionRequest,
+    current_user: Dict[str, Any] = Depends(supabase_auth.get_current_user)
+):
+    """Execute a workflow"""
+    try:
+        # Check if workflow exists and belongs to user
+        workflow_result = await workflow_crud.get_workflow(str(workflow_id), current_user["id"])
+        
+        if not workflow_result["success"]:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workflow not found"
+            )
+        
+        workflow = workflow_result["data"]
+        
+        # Create execution record using execution_crud
+        execution_data_db = {
+            "workflow_id": str(workflow_id),
+            "user_id": current_user["id"],
             "status": "pending",
-            "message": "Workflow execution started"
+            "input_data": execution_data.input_data or {},
+            "started_at": datetime.utcnow().isoformat()
         }
+        
+        execution_result = await execution_crud.create_execution(execution_data_db)
+        
+        if not execution_result["success"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=execution_result["error"]
+            )
+        
+        execution = execution_result["data"]
+        
+        # Call workflow service for actual execution
+        try:
+            from app.integration.workflow_service_client import workflow_service_client
+            
+            # Prepare workflow data for execution
+            workflow_execution_data = {
+                "id": str(workflow_id),
+                "workflow_json": workflow["workflow_json"],
+                "execution_id": execution["id"]
+            }
+            
+            # Execute workflow via workflow service
+            execution_response = await workflow_service_client.execute_workflow(
+                workflow_execution_data,
+                current_user["id"]
+            )
+            
+            # Update execution status with workflow service response
+            update_data = {
+                "status": execution_response["status"],
+                "workflow_service_execution_id": execution_response.get("execution_id")
+            }
+            
+            if execution_response.get("error_message"):
+                update_data["error_message"] = execution_response["error_message"]
+            if execution_response.get("execution_time_seconds"):
+                update_data["execution_time_seconds"] = execution_response["execution_time_seconds"]
+            if execution_response.get("output_data"):
+                update_data["output_data"] = execution_response["output_data"]
+            
+            await execution_crud.update_execution(execution["id"], current_user["id"], update_data)
+            
+            # Update workflow execution count
+            await workflow_crud.increment_execution_count(str(workflow_id))
+            
+            return {
+                "success": True,
+                "execution_id": execution["id"],
+                "status": execution_response["status"],
+                "workflow_service_execution_id": execution_response.get("execution_id"),
+                "message": "Workflow execution completed successfully" if execution_response["status"] == "completed" else "Workflow execution started"
+            }
+            
+        except Exception as ws_error:
+            # Update execution status with error
+            error_update_data = {
+                "status": "failed",
+                "error_message": str(ws_error)
+            }
+            await execution_crud.update_execution(execution["id"], current_user["id"], error_update_data)
+            
+            logger.error(f"Workflow service execution failed: {str(ws_error)}")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Workflow service error: {str(ws_error)}"
+            )
         
     except HTTPException:
         raise
@@ -365,8 +580,49 @@ async def get_execution_status(
         result = await execution_crud.get_execution(str(execution_id), current_user["id"])
         
         if result["success"]:
+            execution = result["data"]
+            
+            # If execution has a workflow_service_execution_id, fetch real status
+            if execution.get("workflow_service_execution_id"):
+                try:
+                    from app.integration.workflow_service_client import workflow_service_client
+                    
+                    # Fetch real status from workflow service
+                    ws_status = await workflow_service_client.get_workflow_status(
+                        execution["workflow_service_execution_id"],
+                        current_user["id"]
+                    )
+                    
+                    # Update local execution with real status if different
+                    if ws_status["status"] != execution["status"]:
+                        update_data = {
+                            "status": ws_status["status"],
+                            "updated_at": datetime.utcnow().isoformat()
+                        }
+                        
+                        if ws_status.get("output_data"):
+                            update_data["output_data"] = ws_status["output_data"]
+                        if ws_status.get("error_message"):
+                            update_data["error_message"] = ws_status["error_message"]
+                        if ws_status.get("execution_time_seconds"):
+                            update_data["execution_time_seconds"] = ws_status["execution_time_seconds"]
+                        
+                        await execution_crud.update_execution(
+                            str(execution_id),
+                            current_user["id"],
+                            update_data
+                        )
+                        
+                        # Refresh execution data
+                        result = await execution_crud.get_execution(str(execution_id), current_user["id"])
+                        execution = result["data"]
+                        
+                except Exception as ws_error:
+                    logger.warning(f"Could not fetch real status from workflow service: {str(ws_error)}")
+                    # Continue with local status if workflow service is unavailable
+            
             return {
-                "execution": result["data"]
+                "execution": execution
             }
         else:
             raise HTTPException(
@@ -483,6 +739,119 @@ async def use_workflow_template(
             detail=f"Error creating workflow from template: {str(e)}"
         )
 
+# AI-Powered Workflow Generation
+@router.post("/generate", response_model=WorkflowGenerationResponse)
+async def generate_workflow(
+    generation_request: WorkflowGenerationRequest,
+    current_user: Dict[str, Any] = Depends(supabase_auth.get_current_user)
+):
+    """
+    Generate a workflow from natural language using AI service
+    
+    This endpoint integrates with the AI service to create workflows from natural language prompts.
+    The AI service analyzes the prompt and generates a complete workflow structure using the
+    5-primitives system.
+    
+    Args:
+        generation_request: Contains the natural language prompt and optional metadata
+        current_user: Authenticated user information
+        
+    Returns:
+        Generated workflow with AI metadata and database ID
+    """
+    try:
+        # Validate the prompt
+        if not generation_request.prompt.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Prompt cannot be empty"
+            )
+        
+        # Prepare AI service request
+        ai_request = {
+            "prompt": generation_request.prompt,
+            "user_id": current_user["id"]
+        }
+        
+        # Call AI service to generate workflow
+        async with config.get_ai_service_client() as client:
+            try:
+                response = await client.post(
+                    "/ai/generate",
+                    json=ai_request
+                )
+                response.raise_for_status()
+                
+                ai_result = response.json()
+                generated_workflow = ai_result["workflow"]
+                ai_metadata = ai_result.get("ai_metadata", {})
+                
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    error_detail = e.response.json().get("detail", "Invalid request")
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"AI service validation error: {error_detail}"
+                    )
+                elif e.response.status_code == 429:
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="AI service rate limit exceeded. Please try again later."
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=f"AI service error: {e.response.status_code}"
+                    )
+            except httpx.RequestError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="AI service is currently unavailable"
+                )
+        
+        # Prepare workflow data for database storage
+        workflow_name = generation_request.name or generated_workflow.get("name", "AI Generated Workflow")
+        workflow_description = generation_request.description or generated_workflow.get("description", f"Generated from prompt: {generation_request.prompt[:100]}...")
+        
+        workflow_data = {
+            "name": workflow_name,
+            "description": workflow_description,
+            "workflow_json": generated_workflow,
+            "tags": generation_request.tags or [],
+            "is_template": False,
+            "status": "draft",
+            "primitives_count": len(generated_workflow.get("primitives", [])),
+            "estimated_cost": generated_workflow.get("estimated_cost", 0.0)
+        }
+        
+        # Store the generated workflow in database
+        result = await workflow_crud.create_workflow(current_user["id"], workflow_data)
+        
+        if not result["success"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to save generated workflow: {result['error']}"
+            )
+        
+        saved_workflow = result["data"]
+        
+        return WorkflowGenerationResponse(
+            success=True,
+            workflow=saved_workflow["workflow_json"],
+            workflow_id=saved_workflow["id"],
+            ai_metadata=ai_metadata,
+            message="Workflow generated successfully using AI"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error in workflow generation: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating workflow: {str(e)}"
+        )
+
 # Health check
 @router.get("/health")
 async def workflows_health_check():
@@ -495,6 +864,239 @@ async def workflows_health_check():
             "execution_tracking",
             "template_support",
             "pagination",
-            "filtering"
+            "filtering",
+            "ai_generation",
+            "workflow_service_integration"
+        ]
+    }
+
+# Workflow Templates
+@router.get("/templates/", response_model=Dict[str, Any])
+async def list_workflow_templates(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    category: Optional[str] = Query(None),
+    difficulty: Optional[str] = Query(None),
+    featured: Optional[bool] = Query(None)
+):
+    """List available workflow templates"""
+    try:
+        supabase = db_manager.get_client()
+        
+        # Build query
+        query = supabase.table("workflow_templates").select("*")
+        
+        # Apply filters
+        if category:
+            query = query.eq("category", category)
+        if difficulty:
+            query = query.eq("difficulty", difficulty)
+        if featured is not None:
+            query = query.eq("is_featured", featured)
+        
+        # Apply pagination and ordering
+        result = query.order("usage_count", desc=True).range(skip, skip + limit - 1).execute()
+        
+        # Get total count
+        count_result = supabase.table("workflow_templates").select("id", count="exact").execute()
+        total_count = count_result.count if count_result.count else 0
+        
+        return {
+            "templates": result.data,
+            "total": total_count,
+            "skip": skip,
+            "limit": limit,
+            "has_more": total_count > skip + limit
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching templates: {str(e)}"
+        )
+
+@router.post("/templates/{template_id}/use", response_model=Dict[str, Any])
+async def use_workflow_template(
+    template_id: UUID,
+    workflow_name: str,
+    current_user: Dict[str, Any] = Depends(supabase_auth.get_current_user)
+):
+    """Create a workflow from a template"""
+    try:
+        supabase = db_manager.get_client()
+        
+        # Get template
+        template_result = supabase.table("workflow_templates").select("*").eq("id", str(template_id)).execute()
+        
+        if not template_result.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Template not found"
+            )
+        
+        template = template_result.data[0]
+        
+        # Create workflow from template
+        workflow_result = supabase.table("workflows").insert({
+            "user_id": current_user["id"],
+            "name": workflow_name,
+            "description": f"Created from template: {template['name']}",
+            "workflow_json": template["workflow_json"],
+            "primitives_count": len(template["workflow_json"].get("primitives", [])),
+            "status": "draft"
+        }).execute()
+        
+        if not workflow_result.data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to create workflow from template"
+            )
+        
+        # Update template usage count
+        supabase.table("workflow_templates").update({
+            "usage_count": template["usage_count"] + 1
+        }).eq("id", str(template_id)).execute()
+        
+        return {
+            "success": True,
+            "workflow": workflow_result.data[0],
+            "message": "Workflow created from template successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating workflow from template: {str(e)}"
+        )
+
+# AI-Powered Workflow Generation
+@router.post("/generate", response_model=WorkflowGenerationResponse)
+async def generate_workflow(
+    generation_request: WorkflowGenerationRequest,
+    current_user: Dict[str, Any] = Depends(supabase_auth.get_current_user)
+):
+    """
+    Generate a workflow from natural language using AI service
+    
+    This endpoint integrates with the AI service to create workflows from natural language prompts.
+    The AI service analyzes the prompt and generates a complete workflow structure using the
+    5-primitives system.
+    
+    Args:
+        generation_request: Contains the natural language prompt and optional metadata
+        current_user: Authenticated user information
+        
+    Returns:
+        Generated workflow with AI metadata and database ID
+    """
+    try:
+        # Validate the prompt
+        if not generation_request.prompt.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Prompt cannot be empty"
+            )
+        
+        # Prepare AI service request
+        ai_request = {
+            "prompt": generation_request.prompt,
+            "user_id": current_user["id"]
+        }
+        
+        # Call AI service to generate workflow
+        async with config.get_ai_service_client() as client:
+            try:
+                response = await client.post(
+                    "/ai/generate",
+                    json=ai_request
+                )
+                response.raise_for_status()
+                
+                ai_result = response.json()
+                generated_workflow = ai_result["workflow"]
+                ai_metadata = ai_result.get("ai_metadata", {})
+                
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    error_detail = e.response.json().get("detail", "Invalid request")
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"AI service validation error: {error_detail}"
+                    )
+                elif e.response.status_code == 429:
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="AI service rate limit exceeded. Please try again later."
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=f"AI service error: {e.response.status_code}"
+                    )
+            except httpx.RequestError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="AI service is currently unavailable"
+                )
+        
+        # Prepare workflow data for database storage
+        workflow_name = generation_request.name or generated_workflow.get("name", "AI Generated Workflow")
+        workflow_description = generation_request.description or generated_workflow.get("description", f"Generated from prompt: {generation_request.prompt[:100]}...")
+        
+        workflow_data = {
+            "name": workflow_name,
+            "description": workflow_description,
+            "workflow_json": generated_workflow,
+            "tags": generation_request.tags or [],
+            "is_template": False,
+            "status": "draft",
+            "primitives_count": len(generated_workflow.get("primitives", [])),
+            "estimated_cost": generated_workflow.get("estimated_cost", 0.0)
+        }
+        
+        # Store the generated workflow in database
+        result = await workflow_crud.create_workflow(current_user["id"], workflow_data)
+        
+        if not result["success"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to save generated workflow: {result['error']}"
+            )
+        
+        saved_workflow = result["data"]
+        
+        return WorkflowGenerationResponse(
+            success=True,
+            workflow=saved_workflow["workflow_json"],
+            workflow_id=saved_workflow["id"],
+            ai_metadata=ai_metadata,
+            message="Workflow generated successfully using AI"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error in workflow generation: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating workflow: {str(e)}"
+        )
+
+# Health check
+@router.get("/health")
+async def workflows_health_check():
+    """Health check for workflow endpoints"""
+    return {
+        "status": "healthy",
+        "service": "workflows",
+        "features": [
+            "crud_operations",
+            "execution_tracking",
+            "template_support",
+            "pagination",
+            "filtering",
+            "ai_generation"
         ]
     }

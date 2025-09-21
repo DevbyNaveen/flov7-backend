@@ -97,6 +97,25 @@ class WorkflowExecutionCRUD:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    async def update_execution(self, execution_id: str, user_id: str, update_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Update execution with arbitrary data"""
+        try:
+            # Check if execution exists and belongs to user
+            existing = await self.get_execution(execution_id, user_id)
+            if not existing["success"]:
+                return existing
+            
+            # Update execution
+            result = self.supabase.table("workflow_executions").update(update_data).eq("id", execution_id).execute()
+            
+            if result.data:
+                return {"success": True, "data": result.data[0]}
+            else:
+                return {"success": False, "error": "Failed to update execution"}
+                
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
     async def update_execution_status(
         self, 
         execution_id: str, 

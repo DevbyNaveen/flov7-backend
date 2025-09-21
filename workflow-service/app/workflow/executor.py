@@ -193,101 +193,26 @@ class WorkflowExecutor:
             raise
     
     async def _execute_with_crewai(self, workflow_data: Dict[str, Any], user_id: str, execution_id: str) -> Optional[Dict[str, Any]]:
-        """Execute workflow using CrewAI multi-agent system with enhanced integration"""
+        """Execute workflow using enhanced CrewAI multi-agent system"""
         try:
-            from crewai import Crew
-            from app.crewai.agents import agent_manager
-            from app.crewai.tasks import task_manager
-            import asyncio
+            from app.crewai.workflow_orchestrator import crewai_orchestrator
             
-            # Get agents and tasks
-            agents = list(agent_manager.get_all_agents().values())
-            tasks = list(task_manager.get_all_tasks().values())
+            logger.info(f"Starting enhanced CrewAI workflow execution: {execution_id}")
             
-            if not agents or not tasks:
-                logger.warning("CrewAI agents or tasks not available, skipping CrewAI execution")
+            # Use the enhanced CrewAI orchestrator
+            result = await crewai_orchestrator.execute_workflow_with_crewai(
+                workflow_data, user_id, execution_id
+            )
+            
+            if result["status"] == "completed":
+                logger.info(f"Enhanced CrewAI execution completed: {execution_id}")
+                return result
+            else:
+                logger.warning(f"Enhanced CrewAI execution failed: {result.get('error_message')}")
                 return None
-            
-            logger.info(f"Starting CrewAI execution with {len(agents)} agents and {len(tasks)} tasks")
-            
-            # Create workflow-specific tasks based on workflow data
-            workflow_tasks = await self._create_workflow_specific_tasks(workflow_data, agents)
-            if workflow_tasks:
-                tasks = workflow_tasks
-                logger.info(f"Created {len(workflow_tasks)} workflow-specific tasks")
-            
-            # Create crew with enhanced configuration
-            crew = Crew(
-                agents=agents,
-                tasks=tasks,
-                verbose=True,
-                process="sequential",  # Use sequential process for better control
-                memory=True,  # Enable memory for better context
-                max_rpm=10,  # Rate limiting
-                max_execution_time=300  # 5 minute timeout
-            )
-            
-            # Prepare comprehensive input data for crew
-            crew_input = {
-                "workflow_data": workflow_data,
-                "user_id": user_id,
-                "execution_id": execution_id,
-                "workflow_name": workflow_data.get("name", "Unknown"),
-                "workflow_description": workflow_data.get("description", ""),
-                "nodes": workflow_data.get("nodes", []),
-                "edges": workflow_data.get("edges", []),
-                "metadata": workflow_data.get("metadata", {})
-            }
-            
-            # Execute crew in a separate thread to avoid blocking
-            logger.info(f"Starting CrewAI execution for workflow '{workflow_data.get('name', 'Unknown')}'")
-            
-            # Run crew execution with timeout
-            crew_result = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(
-                    None, 
-                    lambda: crew.kickoff(inputs=crew_input)
-                ),
-                timeout=300  # 5 minute timeout
-            )
-            
-            # Process and structure the result
-            result = {
-                "workflow_name": workflow_data.get("name", "Unknown"),
-                "workflow_id": workflow_data.get("id"),
-                "executed_by": user_id,
-                "timestamp": datetime.utcnow().isoformat(),
-                "execution_method": "crewai",
-                "crew_result": str(crew_result),
-                "agents_used": len(agents),
-                "tasks_executed": len(tasks),
-                "execution_summary": self._extract_execution_summary(crew_result),
-                "performance_metrics": {
-                    "total_agents": len(agents),
-                    "total_tasks": len(tasks),
-                    "execution_mode": "sequential"
-                }
-            }
-            
-            logger.info(f"CrewAI execution completed successfully for workflow '{workflow_data.get('name', 'Unknown')}'")
-            
-            return {
-                "execution_id": execution_id,
-                "status": "completed",
-                "output_data": result,
-                "error_message": None
-            }
-            
-        except asyncio.TimeoutError:
-            logger.error(f"CrewAI execution timed out for workflow {workflow_data.get('name', 'Unknown')}")
-            return {
-                "execution_id": execution_id,
-                "status": "failed",
-                "output_data": None,
-                "error_message": "CrewAI execution timed out after 5 minutes"
-            }
+                
         except Exception as e:
-            logger.warning(f"CrewAI execution failed: {str(e)}")
+            logger.error(f"Enhanced CrewAI execution failed: {str(e)}")
             logger.info("Falling back to simple local execution")
             return None
     

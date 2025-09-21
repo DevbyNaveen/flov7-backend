@@ -44,6 +44,11 @@ class AIServiceConfig:
         self.max_workflow_complexity = 20  # Max number of nodes
         self.workflow_generation_timeout = 60  # seconds
         
+        # Workflow Service integration
+        self.workflow_service_url = getattr(settings, 'WORKFLOW_SERVICE_URL', 'http://localhost:8002')
+        self.workflow_service_timeout = getattr(settings, 'WORKFLOW_SERVICE_TIMEOUT', 30)
+        self.enable_workflow_execution = getattr(settings, 'ENABLE_WORKFLOW_EXECUTION', True)
+        
         # Validate configuration
         self._validate_config()
     

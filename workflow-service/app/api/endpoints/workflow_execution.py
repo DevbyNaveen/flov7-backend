@@ -34,6 +34,7 @@ class WorkflowExecutionResponse(BaseModel):
     """Response model for workflow execution"""
     execution_id: str
     status: str
+    workflow_id: Optional[str] = None
     output_data: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     execution_time_seconds: Optional[float] = None
@@ -45,6 +46,7 @@ class WorkflowStatusResponse(BaseModel):
     """Response model for workflow status"""
     execution_id: str
     status: str
+    workflow_id: Optional[str] = None
     updated_at: str
     metadata: Optional[Dict[str, Any]] = None
 
@@ -61,11 +63,18 @@ async def execute_workflow(request: WorkflowExecutionRequest):
         Workflow execution result
     """
     try:
+        # Extract workflow_id from workflow_data if available
+        workflow_id = request.workflow_data.get("id") or request.workflow_data.get("workflow_id")
+        
         # Execute workflow
         result = await workflow_executor.execute_workflow(
             request.workflow_data,
             request.user_id
         )
+        
+        # Add workflow_id to result if available
+        if workflow_id:
+            result["workflow_id"] = workflow_id
         
         # Update status tracker with execution results
         await status_tracker.update_status(
@@ -107,9 +116,15 @@ async def get_workflow_status(execution_id: str, user_id: str):
                 detail="Workflow execution not found"
             )
         
+        # Extract workflow_id from metadata if available
+        workflow_id = None
+        if status_info.get("metadata"):
+            workflow_id = status_info["metadata"].get("workflow_id")
+        
         return WorkflowStatusResponse(
             execution_id=execution_id,
             status=status_info["status"],
+            workflow_id=workflow_id,
             updated_at=status_info["updated_at"].isoformat(),
             metadata=status_info.get("metadata")
         )

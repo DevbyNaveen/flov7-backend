@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  # Temporal Server
+  temporal:
+    image: temporalio/server:latest
+    ports:
+      - "7233:7233"  # gRPC
+      - "8233:8233"  # Web UI
+    environment:
+      - DB=sqlite
+      - DB_FILENAME=/etc/temporal/data/temporal.db
+    volumes:
+      - temporal_data:/etc/temporal/data
+    networks:
+      - flov7_network
+
+  # Temporal Worker
+  temporal-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.temporal-worker
+    environment:
+      - TEMPORAL_HOST=temporal:7233
+      - TEMPORAL_NAMESPACE=default
+      - TEMPORAL_TASK_QUEUE=flov7-workflow-task-queue
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - temporal
+      - redis
+    networks:
+      - flov7_network
+    restart: unless-stopped
+
+  # Workflow Service (with integrated worker option)
+  workflow-service:
+    build: .
+    ports:
+      - "8002:8002"
+    environment:
+      - TEMPORAL_HOST=temporal:7233
+      - START_TEMPORAL_WORKER=false  # Set to true to run worker in same container
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - temporal
+      - redis
+    networks:
+      - flov7_network
+
+  # Redis (for caching and sessions)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - flov7_network
+
+  # PostgreSQL (for Supabase)
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=flov7
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - flov7_network
+
+volumes:
+  temporal_data:
+  redis_data:
+  postgres_data:
+
+networks:
+  flov7_network:
+    driver: bridge
