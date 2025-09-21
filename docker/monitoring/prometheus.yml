@@ -1,0 +1,46 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['nginx:80']
+    metrics_path: '/health/api-gateway'
+    scrape_interval: 5s
+    scrape_timeout: 5s
+
+  - job_name: 'ai-service'
+    static_configs:
+      - targets: ['nginx:80']
+    metrics_path: '/health/ai-service'
+    scrape_interval: 5s
+    scrape_timeout: 5s
+
+  - job_name: 'workflow-service'
+    static_configs:
+      - targets: ['nginx:80']
+    metrics_path: '/health/workflow-service'
+    scrape_interval: 5s
+    scrape_timeout: 5s
+
+  - job_name: 'temporal'
+    static_configs:
+      - targets: ['temporal:9090']
+
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres:5432']
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']

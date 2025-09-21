@@ -4,10 +4,15 @@ Validation logic for the 5-primitives system.
 """
 
 from typing import Dict, Any, Optional, List, Tuple
+import sys
+import os
+import logging
+
+# Add the project root to Python path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 from shared.utils.validators import validate_primitive_type, validate_primitive_schema
 from shared.constants.primitives import PRIMITIVES
 from shared.models.primitive import PrimitiveTypes, PrimitiveCategories
-import logging
 
 # Configure logging
 logger = logging.getLogger(__name__)

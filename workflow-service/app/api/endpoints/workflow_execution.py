@@ -67,14 +67,13 @@ async def execute_workflow(request: WorkflowExecutionRequest):
             request.user_id
         )
         
-        # Update status tracker
-        status_tracker.update_status(
-            result["execution_id"],
-            result["status"],
-            {
-                "workflow_name": request.workflow_data.get("name", "Unknown"),
-                "user_id": request.user_id
-            }
+        # Update status tracker with execution results
+        await status_tracker.update_status(
+            execution_id=result["execution_id"],
+            status=result["status"],
+            output_data=result.get("output_data"),
+            error_message=result.get("error_message"),
+            execution_time_seconds=result.get("execution_time_seconds")
         )
         
         return WorkflowExecutionResponse(**result)
@@ -88,18 +87,19 @@ async def execute_workflow(request: WorkflowExecutionRequest):
 
 
 @router.get("/status/{execution_id}", response_model=WorkflowStatusResponse)
-async def get_workflow_status(execution_id: str):
+async def get_workflow_status(execution_id: str, user_id: str):
     """
     Get the status of a workflow execution
     
     Args:
         execution_id: ID of the workflow execution
+        user_id: ID of the user (for security)
         
     Returns:
         Workflow execution status
     """
     try:
-        status_info = status_tracker.get_status(execution_id)
+        status_info = await status_tracker.get_status(execution_id, user_id)
         
         if not status_info:
             raise HTTPException(
@@ -126,18 +126,19 @@ async def get_workflow_status(execution_id: str):
 
 
 @router.get("/history/{execution_id}")
-async def get_execution_history(execution_id: str):
+async def get_execution_history(execution_id: str, user_id: str):
     """
     Get execution history for a workflow
     
     Args:
         execution_id: ID of the workflow execution
+        user_id: ID of the user (for security)
         
     Returns:
         List of status updates in chronological order
     """
     try:
-        history = status_tracker.get_execution_history(execution_id)
+        history = await status_tracker.get_execution_history(execution_id, user_id)
         
         if not history:
             raise HTTPException(

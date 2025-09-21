@@ -10,6 +10,9 @@ import uvicorn
 import logging
 from datetime import datetime
 
+# Import API routers
+from app.api.v1.router import router as v1_router
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,6 +25,9 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
+
+# Include API routers
+app.include_router(v1_router)
 
 # CORS middleware
 app.add_middleware(
