@@ -6,6 +6,8 @@ Handles application configuration and settings.
 from shared.config.settings import settings
 from typing import Optional
 import logging
+import httpx
+from urllib.parse import urljoin
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -29,6 +31,14 @@ class APIGatewayConfig:
         # Redis configuration
         self.redis_url = settings.REDIS_URL
         
+        # AI Service configuration
+        self.ai_service_url = f"http://{settings.AI_SERVICE_HOST}:{settings.AI_SERVICE_PORT}"
+        self.ai_service_timeout = 30  # seconds
+        
+        # Workflow Service configuration
+        self.workflow_service_url = f"http://{settings.WORKFLOW_SERVICE_HOST}:{settings.WORKFLOW_SERVICE_PORT}"
+        self.workflow_service_timeout = 30  # seconds
+        
         # Validate configuration
         self._validate_config()
     
@@ -45,6 +55,22 @@ class APIGatewayConfig:
         
         if not self.redis_url:
             logger.warning("REDIS_URL not configured")
+    
+    def get_ai_service_client(self) -> httpx.AsyncClient:
+        """Get configured HTTP client for AI service communication"""
+        return httpx.AsyncClient(
+            base_url=self.ai_service_url,
+            timeout=httpx.Timeout(self.ai_service_timeout),
+            headers={"Content-Type": "application/json"}
+        )
+    
+    def get_workflow_service_client(self) -> httpx.AsyncClient:
+        """Get configured HTTP client for workflow service communication"""
+        return httpx.AsyncClient(
+            base_url=self.workflow_service_url,
+            timeout=httpx.Timeout(self.workflow_service_timeout),
+            headers={"Content-Type": "application/json"}
+        )
 
 
 # Global configuration instance

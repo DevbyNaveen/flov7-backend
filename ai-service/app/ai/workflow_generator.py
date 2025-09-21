@@ -9,7 +9,7 @@ import sys
 import os
 import asyncio
 from datetime import datetime
-from app.ai.openai_client import openai_client
+from app.ai.enhanced_openai_client import enhanced_openai_client
 from app.ai.advanced_prompts import advanced_prompt_engine
 from app.config import config
 from app.integration.api_gateway_client import api_gateway_client
@@ -29,7 +29,7 @@ class WorkflowGenerator:
     """Enhanced AI-powered workflow generator with database persistence"""
     
     def __init__(self):
-        self.openai_client = openai_client
+        self.openai_client = enhanced_openai_client
         self.prompt_engine = advanced_prompt_engine
         self.config = config
         self.workflow_crud = workflow_crud
@@ -50,32 +50,39 @@ class WorkflowGenerator:
         try:
             logger.info(f"Generating workflow for user {user_id}: {prompt[:100]}...")
             
-            # Use advanced prompts if enabled
-            if self.config.enable_advanced_prompts:
-                system_prompt = self.prompt_engine.generate_system_prompt()
-                user_prompt = self.prompt_engine.generate_user_prompt(prompt, context)
-            else:
-                system_prompt = self._get_basic_system_prompt()
-                user_prompt = prompt
+            # Prepare context for AI generation
+            generation_context = {
+                "user_id": user_id,
+                "prompt": prompt,
+                **(context or {})
+            }
             
-            # Generate workflow using OpenAI with enhanced prompts
-            result = await self._generate_workflow_with_ai(system_prompt, user_prompt, {"user_id": user_id})
+            # Use enhanced AI client for generation with validation
+            result = await enhanced_openai_client.generate_workflow_with_validation(
+                prompt=prompt,
+                context=generation_context
+            )
             
             workflow_data = result["workflow"]
             
-            # Validate generated workflow
-            if not validate_workflow_json(workflow_data):
-                raise ValueError("Generated workflow has invalid structure")
-            
-            # Enhance workflow with advanced metadata
-            if self.config.enable_advanced_prompts:
-                workflow_data = self.prompt_engine.enhance_workflow_with_metadata(workflow_data, prompt)
+            # Additional validation using our validation system
+            structure_validation = self.validate_workflow_structure(workflow_data)
+            if not structure_validation:
+                # Try to fix structure issues
+                workflow_data = await self._auto_fix_workflow_structure(workflow_data)
+                structure_validation = self.validate_workflow_structure(workflow_data)
+                if not structure_validation:
+                    raise ValueError("Generated workflow has invalid structure that cannot be fixed")
             
             # Enhance workflow with additional metadata
             enhanced_workflow = self._enhance_workflow(workflow_data, prompt, user_id)
             
-            # Validate workflow quality
+            # Validate workflow quality using both systems
             quality_check = self.prompt_engine.validate_workflow_quality(enhanced_workflow)
+            ai_validation = result.get("validation", {})
+            
+            # Combine validation results
+            final_quality_score = min(quality_check["score"], 100 if ai_validation.get("valid", True) else 50)
             
             # Save to database if enabled and requested
             db_result = None
@@ -102,11 +109,13 @@ class WorkflowGenerator:
             return {
                 "workflow": enhanced_workflow,
                 "ai_metadata": {
-                    "model": result.get("model", "gpt-4"),
+                    "model": result.get("model", "enhanced_ai"),
                     "usage": result.get("usage", {}),
-                    "quality_score": quality_check["score"],
+                    "quality_score": final_quality_score,
                     "quality_issues": quality_check["issues"],
-                    "advanced_prompts_used": self.config.enable_advanced_prompts
+                    "validation_result": ai_validation,
+                    "advanced_prompts_used": self.config.enable_advanced_prompts,
+                    "generation_method": result.get("generation_method", "unknown")
                 },
                 "database_result": db_result
             }
@@ -116,19 +125,17 @@ class WorkflowGenerator:
             raise
     
     async def _generate_workflow_with_ai(self, system_prompt: str, user_prompt: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate workflow using AI with enhanced prompts"""
+        """Generate workflow using enhanced AI client"""
         try:
-            # Use the OpenAI client to generate workflow
-            result = self.openai_client.generate_workflow_with_system_prompt(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+            # Use enhanced AI client for better generation
+            result = await enhanced_openai_client.generate_workflow_with_validation(
+                prompt=user_prompt,
                 context=context
             )
             return result
         except Exception as e:
             logger.error(f"AI generation error: {str(e)}")
-            # Fallback to basic generation
-            return self.openai_client.generate_workflow(user_prompt, context)
+            raise
     
     async def _save_workflow_to_database(self, workflow_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         """Save workflow to database using CRUD operations"""
@@ -286,29 +293,118 @@ Use only these primitive types: trigger, action, connection, condition, data."""
             logger.error(f"Error regenerating workflow: {str(e)}")
             return {"success": False, "error": str(e)}
     
-    def validate_workflow_structure(self, workflow_data: Dict[str, Any]) -> bool:
-        """Validate the workflow structure against Flov7 primitives system"""
+    async def _auto_fix_workflow_structure(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
+        """Automatically fix common workflow structure issues"""
         try:
-            # Check if workflow has required fields
-            required_fields = ["name", "nodes", "edges"]
+            # Ensure required fields
+            if "name" not in workflow:
+                workflow["name"] = "Generated Workflow"
+            
+            if "description" not in workflow:
+                workflow["description"] = "Automatically generated workflow"
+            
+            if "nodes" not in workflow:
+                workflow["nodes"] = []
+            
+            if "edges" not in workflow:
+                workflow["edges"] = []
+            
+            # Ensure metadata exists
+            if "metadata" not in workflow:
+                workflow["metadata"] = {}
+            
+            # Fix node structure
+            nodes = workflow.get("nodes", [])
+            for i, node in enumerate(nodes):
+                if not isinstance(node, dict):
+                    nodes[i] = {"id": f"node_{i}", "type": "action", "data": {}}
+                
+                if "id" not in node:
+                    node["id"] = f"node_{i}"
+                
+                if "type" not in node or node["type"] not in {"trigger", "action", "connection", "condition", "data"}:
+                    node["type"] = "action"
+                
+                if "position" not in node:
+                    node["position"] = {"x": 100 + (i * 300), "y": 100}
+                
+                if "data" not in node:
+                    node["data"] = {"label": node.get("id", f"Node {i}")}
+            
+            # Fix edge structure
+            edges = workflow.get("edges", [])
+            node_ids = {node.get("id") for node in nodes if "id" in node}
+            
+            valid_edges = []
+            for i, edge in enumerate(edges):
+                if isinstance(edge, dict) and "source" in edge and "target" in edge:
+                    if edge["source"] in node_ids and edge["target"] in node_ids:
+                        if "id" not in edge:
+                            edge["id"] = f"edge_{i}"
+                        valid_edges.append(edge)
+            
+            workflow["edges"] = valid_edges
+            
+            return workflow
+            
+        except Exception as e:
+            logger.error(f"Error auto-fixing workflow structure: {str(e)}")
+            return workflow
+    
+    def validate_workflow_structure(self, workflow_data: Dict[str, Any]) -> bool:
+        """Enhanced validation of the workflow structure"""
+        try:
+            # Check required top-level fields
+            required_fields = ["name", "description", "nodes", "edges"]
             for field in required_fields:
                 if field not in workflow_data:
                     return False
             
             # Validate nodes
             nodes = workflow_data.get("nodes", [])
+            if not isinstance(nodes, list) or len(nodes) == 0:
+                return False
+            
+            valid_types = {"trigger", "action", "connection", "condition", "data"}
+            has_trigger = False
+            
             for node in nodes:
-                if not self._validate_node(node):
+                if not isinstance(node, dict):
                     return False
+                
+                if "type" not in node or node["type"] not in valid_types:
+                    return False
+                
+                if node["type"] == "trigger":
+                    has_trigger = True
+                
+                if "id" not in node or "position" not in node or "data" not in node:
+                    return False
+            
+            # Must have at least one trigger
+            if not has_trigger:
+                return False
             
             # Validate edges
             edges = workflow_data.get("edges", [])
+            if not isinstance(edges, list):
+                return False
+            
+            node_ids = {node.get("id") for node in nodes if "id" in node}
             for edge in edges:
-                if not self._validate_edge(edge):
+                if not isinstance(edge, dict):
+                    return False
+                
+                if "source" not in edge or "target" not in edge:
+                    return False
+                
+                if edge["source"] not in node_ids or edge["target"] not in node_ids:
                     return False
             
             return True
-        except Exception:
+            
+        except Exception as e:
+            logger.error(f"Workflow validation error: {str(e)}")
             return False
     
     def _validate_node(self, node: Dict[str, Any]) -> bool:

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
 import logging
+import asyncio
 from datetime import datetime
 from contextlib import asynccontextmanager
 
@@ -16,6 +17,7 @@ from app.api.endpoints.workflow_execution import router as workflow_router
 
 # Import initialization functions
 from app.temporal.client import initialize_temporal_client, close_temporal_client
+from app.temporal.worker import TemporalWorkerManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -43,12 +45,28 @@ async def lifespan(app: FastAPI):
     # Initialize Temporal client
     await initialize_temporal_client()
     
+    # Optionally start Temporal worker (can be disabled via config)
+    import os
+    start_worker = os.getenv("START_TEMPORAL_WORKER", "false").lower() == "true"
+    
+    if start_worker:
+        logger.info("Starting Temporal worker...")
+        worker_manager = TemporalWorkerManager()
+        app.state.temporal_worker = worker_manager
+        asyncio.create_task(worker_manager.start_worker())
+        logger.info("Temporal worker started in background")
+    
     logger.info("Flov7 Workflow Service started successfully")
     
     yield
     
     # Shutdown
     logger.info("Shutting down Flov7 Workflow Service...")
+    
+    # Shutdown Temporal worker if running
+    if hasattr(app.state, 'temporal_worker'):
+        logger.info("Shutting down Temporal worker...")
+        await app.state.temporal_worker.shutdown_worker()
     
     # Close Temporal client
     await close_temporal_client()

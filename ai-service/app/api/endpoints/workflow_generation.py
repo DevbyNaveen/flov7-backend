@@ -11,6 +11,7 @@ from slowapi.util import get_remote_address
 from app.ai.workflow_generator import workflow_generator
 from app.primitives.validation import primitive_validator
 from app.primitives.primitives import primitive_manager
+from app.integration.workflow_service_client import workflow_service_client
 import logging
 
 # Configure logging
@@ -40,6 +41,34 @@ class WorkflowGenerationResponse(BaseModel):
     """Response model for workflow generation"""
     workflow: Dict[str, Any]
     ai_metadata: Optional[Dict[str, Any]] = None
+
+
+class WorkflowExecutionRequest(BaseModel):
+    """Request model for workflow execution"""
+    workflow_id: str
+    user_id: str
+
+
+class WorkflowExecutionResponse(BaseModel):
+    """Response model for workflow execution"""
+    execution_id: str
+    status: str
+    workflow_id: str
+    user_id: str
+    message: str
+
+
+class WorkflowExecutionStatusResponse(BaseModel):
+    """Response model for workflow execution status"""
+    execution_id: str
+    status: str
+    workflow_id: str
+    user_id: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    execution_time_seconds: Optional[float] = None
+    output_data: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
 
 
 @router.post("/generate", response_model=WorkflowGenerationResponse)
@@ -302,4 +331,152 @@ async def regenerate_workflow(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to regenerate workflow"
+        )
+
+
+@router.post("/workflows/{workflow_id}/execute", response_model=WorkflowExecutionResponse)
+@limiter.limit("5/minute")  # Rate limit: 5 executions per minute
+async def execute_workflow(
+    workflow_id: str, 
+    request: WorkflowExecutionRequest, 
+    http_request: Request
+):
+    """
+    Execute a generated workflow using the Workflow Service
+    
+    Args:
+        workflow_id: ID of the workflow to execute
+        request: Execution request with user_id
+        
+    Returns:
+        Execution response with execution_id and status
+    """
+    try:
+        # Retrieve the workflow from database
+        workflow_result = await workflow_generator.get_workflow_from_database(
+            workflow_id, 
+            request.user_id
+        )
+        
+        if not workflow_result["success"]:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=workflow_result["error"]
+            )
+        
+        workflow_data = workflow_result["data"]["workflow"]
+        
+        # Send to Workflow Service for execution
+        execution_result = await workflow_service_client.execute_workflow(
+            workflow_data=workflow_data,
+            user_id=request.user_id
+        )
+        
+        return WorkflowExecutionResponse(
+            execution_id=execution_result["execution_id"],
+            status=execution_result["status"],
+            workflow_id=workflow_id,
+            user_id=request.user_id,
+            message="Workflow execution started successfully"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error executing workflow: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to execute workflow: {str(e)}"
+        )
+
+
+@router.get("/workflows/execution/{execution_id}/status", response_model=WorkflowExecutionStatusResponse)
+async def get_workflow_execution_status(execution_id: str, user_id: str):
+    """
+    Get the status of a workflow execution
+    
+    Args:
+        execution_id: ID of the workflow execution
+        user_id: ID of the user requesting status
+        
+    Returns:
+        Workflow execution status details
+    """
+    try:
+        # Get execution status from Workflow Service
+        status_result = await workflow_service_client.get_workflow_status(
+            execution_id=execution_id,
+            user_id=user_id
+        )
+        
+        # Map the workflow_id from status_result
+        workflow_id = status_result.get("workflow_id", "unknown")
+        
+        return WorkflowExecutionStatusResponse(
+            execution_id=execution_id,
+            status=status_result["status"],
+            workflow_id=workflow_id,
+            user_id=user_id,
+            started_at=status_result.get("started_at"),
+            completed_at=status_result.get("completed_at"),
+            execution_time_seconds=status_result.get("execution_time_seconds"),
+            output_data=status_result.get("output_data"),
+            error_message=status_result.get("error_message")
+        )
+        
+    except Exception as e:
+        logger.error(f"Error retrieving workflow execution status: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve workflow execution status: {str(e)}"
+        )
+
+
+@router.post("/workflows/generate-and-execute")
+@limiter.limit("3/minute")  # Rate limit: 3 generate-and-execute per minute
+async def generate_and_execute_workflow(request: WorkflowGenerationRequest, http_request: Request):
+    """
+    Generate a workflow and immediately execute it
+    
+    Args:
+        request: Workflow generation request with prompt and user context
+        
+    Returns:
+        Combined response with generated workflow and execution details
+    """
+    try:
+        # Step 1: Generate workflow
+        generation_result = await workflow_generator.create_workflow_from_prompt(
+            prompt=request.prompt, 
+            user_id=request.user_id or "anonymous",
+            context=None,
+            save_to_db=True
+        )
+        
+        workflow_data = generation_result["workflow"]
+        workflow_id = generation_result["ai_metadata"]["workflow_id"]
+        
+        # Step 2: Execute workflow
+        execution_result = await workflow_service_client.execute_workflow(
+            workflow_data=workflow_data,
+            user_id=request.user_id or "anonymous"
+        )
+        
+        return {
+            "workflow": workflow_data,
+            "ai_metadata": generation_result["ai_metadata"],
+            "execution": {
+                "execution_id": execution_result["execution_id"],
+                "status": execution_result["status"],
+                "message": "Workflow generated and execution started successfully"
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in generate-and-execute workflow: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate and execute workflow: {str(e)}"
         )
