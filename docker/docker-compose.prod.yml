@@ -1,0 +1,212 @@
+version: '3.8'
+
+services:
+  # Nginx Load Balancer
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api-gateway
+    networks:
+      - flov7-network
+    restart: unless-stopped
+
+  # API Gateway Service
+  api-gateway:
+    build:
+      context: ../api-gateway
+      dockerfile: Dockerfile
+    environment:
+      - SERVICE_NAME=api-gateway
+      - ENVIRONMENT=production
+      - LOG_LEVEL=info
+    env_file:
+      - .env.prod
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - flov7-network
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # AI Service
+  ai-service:
+    build:
+      context: ../ai-service
+      dockerfile: Dockerfile
+    environment:
+      - SERVICE_NAME=ai-service
+      - ENVIRONMENT=production
+      - LOG_LEVEL=info
+    env_file:
+      - .env.prod
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - flov7-network
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # Workflow Service
+  workflow-service:
+    build:
+      context: ../workflow-service
+      dockerfile: Dockerfile
+    environment:
+      - SERVICE_NAME=workflow-service
+      - ENVIRONMENT=production
+      - LOG_LEVEL=info
+    env_file:
+      - .env.prod
+    depends_on:
+      - redis
+      - postgres
+      - temporal
+    networks:
+      - flov7-network
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # PostgreSQL Database (for Temporal)
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=temporal
+      - POSTGRES_USER=temporal
+      - POSTGRES_PASSWORD=${TEMPORAL_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - flov7-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - flov7-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+
+  # Temporal Server
+  temporal:
+    image: temporalio/auto-setup:latest
+    environment:
+      - DB=postgresql
+      - POSTGRES_SEEDS=postgres
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=${TEMPORAL_DB_PASSWORD}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development.yaml
+    depends_on:
+      - postgres
+    volumes:
+      - temporal_data:/etc/temporal/data
+    networks:
+      - flov7-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # Temporal Web UI
+  temporal-web:
+    image: temporalio/web:latest
+    environment:
+      - TEMPORAL_GRPC_ENDPOINT=temporal:7233
+      - TEMPORAL_PERMIT_WRITE_API=true
+    ports:
+      - "8088:8088"
+    depends_on:
+      - temporal
+    networks:
+      - flov7-network
+    restart: unless-stopped
+
+  # Monitoring - Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - flov7-network
+    restart: unless-stopped
+
+  # Monitoring - Grafana
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - flov7-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  temporal_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  flov7-network:
+    driver: bridge

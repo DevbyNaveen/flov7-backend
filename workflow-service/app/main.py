@@ -9,19 +9,65 @@ from fastapi.responses import JSONResponse
 import uvicorn
 import logging
 from datetime import datetime
+from contextlib import asynccontextmanager
+
+# Import API routers
+from app.api.endpoints.workflow_execution import router as workflow_router
+
+# Import initialization functions
+from app.temporal.client import initialize_temporal_client, close_temporal_client
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create FastAPI application
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager for startup and shutdown events"""
+    # Startup
+    logger.info("Starting Flov7 Workflow Service...")
+    
+    # Initialize database connection
+    from shared.config.database import db_manager
+    logger.info("Initializing database connection...")
+    try:
+        # Test database connection
+        client = db_manager.get_client()
+        service_client = db_manager.get_service_client()
+        logger.info("Database connection initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize database connection: {e}")
+        raise
+    
+    # Initialize Temporal client
+    await initialize_temporal_client()
+    
+    logger.info("Flov7 Workflow Service started successfully")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Flov7 Workflow Service...")
+    
+    # Close Temporal client
+    await close_temporal_client()
+    
+    logger.info("Flov7 Workflow Service shutdown complete")
+
+
+# Create FastAPI application with lifespan manager
 app = FastAPI(
     title="Flov7 Workflow Service",
     description="Workflow execution and orchestration service",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan
 )
+
+# Include API routers
+app.include_router(workflow_router, prefix="/api/v1")
 
 # CORS middleware
 app.add_middleware(
@@ -57,9 +103,9 @@ async def workflow_root():
     return {
         "message": "Flov7 Workflow Service",
         "endpoints": {
-            "execute": "/workflow/execute/",
-            "status": "/workflow/status/",
-            "history": "/workflow/history/"
+            "execute": "/api/v1/workflow/execute/",
+            "status": "/api/v1/workflow/status/{execution_id}",
+            "history": "/api/v1/workflow/history/{execution_id}"
         }
     }
 

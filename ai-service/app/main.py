@@ -6,22 +6,36 @@ Handles AI-powered workflow generation using OpenAI GPT-4 and 5-primitives syste
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import uvicorn
 import logging
 from datetime import datetime
+
+# Import API routers
+from app.api.endpoints.workflow_generation import router as workflow_router
+from app.integration.api_gateway_client import api_gateway_client
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Create rate limiter
+limiter = Limiter(key_func=get_remote_address)
+
 # Create FastAPI application
 app = FastAPI(
     title="Flov7 AI Service",
-    description="AI-powered workflow generation service",
+    description="AI-powered workflow generation service using OpenAI GPT-4 and 5-primitives system",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
+
+# Add rate limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS middleware
 app.add_middleware(
@@ -31,6 +45,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include API routers
+app.include_router(workflow_router)
 
 @app.get("/")
 async def root():
@@ -89,6 +106,33 @@ async def global_exception_handler(request: Request, exc: Exception):
             "timestamp": datetime.utcnow().isoformat()
         }
     )
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Startup event handler"""
+    logger.info("Starting Flov7 AI Service...")
+    
+    # Register with API Gateway
+    try:
+        async with api_gateway_client as gateway:
+            result = await gateway.register_ai_service()
+            if result["success"]:
+                logger.info("Successfully registered with API Gateway")
+            else:
+                logger.warning(f"Failed to register with API Gateway: {result['error']}")
+    except Exception as e:
+        logger.warning(f"Could not register with API Gateway: {str(e)}")
+    
+    logger.info("AI Service startup complete")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Shutdown event handler"""
+    logger.info("Shutting down Flov7 AI Service...")
+    # Add any cleanup logic here
+    logger.info("AI Service shutdown complete")
 
 if __name__ == "__main__":
     uvicorn.run(

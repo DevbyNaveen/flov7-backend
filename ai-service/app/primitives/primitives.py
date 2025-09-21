@@ -4,9 +4,14 @@ Implementation of the 5-primitives system for workflow generation.
 """
 
 from typing import Dict, Any, Optional, List
+import sys
+import os
+import logging
+
+# Add the project root to Python path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 from shared.constants.primitives import PRIMITIVES
 from shared.models.primitive import PrimitiveTypes, PrimitiveCategories
-import logging
 
 # Configure logging
 logger = logging.getLogger(__name__)
